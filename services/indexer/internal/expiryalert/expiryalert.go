@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +83,64 @@ func (c Config) withDefaults() Config {
 		c.ContractPageSize = defaultContractPageSize
 	}
 	return c
+}
+
+// Environment keys the indexer reads to configure storage expiry alerting
+// (issue #510). They follow the INDEXER_ prefix every other indexer knob uses
+// (INDEXER_ANOMALY_ENABLED, INDEXER_METRICS_ADDR, ...).
+const (
+	// EnvThresholdLedgers is the near-expiry window in ledgers. Unset, blank
+	// or invalid keeps DefaultThresholdLedgers (5000, ~7 days).
+	EnvThresholdLedgers = "INDEXER_STORAGE_EXPIRY_THRESHOLD_LEDGERS"
+	// EnvMaxEntries caps how many near-expiry entries one contract's scan
+	// reads per pass. Unset, blank or invalid keeps DefaultMaxEntries.
+	EnvMaxEntries = "INDEXER_STORAGE_EXPIRY_MAX_ENTRIES"
+	// EnvEnabled turns the storage expiry alert job on or off. Anything
+	// strconv.ParseBool understands is accepted; the default is enabled, so an
+	// operator opts out with INDEXER_STORAGE_EXPIRY_ALERT_ENABLED=false.
+	EnvEnabled = "INDEXER_STORAGE_EXPIRY_ALERT_ENABLED"
+)
+
+// ConfigFromEnv builds a Config from the process environment, using getenv for
+// lookups (callers pass os.Getenv). A nil getenv yields the defaults. Values
+// that are empty, unparseable or non-positive fall back to the documented
+// default rather than disabling the safety bounds, so a typo can never turn
+// the scan into "everything is expiring" or an unbounded query.
+func ConfigFromEnv(getenv func(string) string) Config {
+	cfg := Config{}.withDefaults()
+	if getenv == nil {
+		return cfg
+	}
+	if v := strings.TrimSpace(getenv(EnvThresholdLedgers)); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.ThresholdLedgers = n
+		}
+	}
+	if v := strings.TrimSpace(getenv(EnvMaxEntries)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxEntries = n
+		}
+	}
+	return cfg
+}
+
+// Enabled reports whether storage expiry alerting is turned on. The job is on
+// by default; only an explicit, parseable false (ENV=0/false/F) disables it, so
+// an unrecognised value never silently switches the feature off. A nil getenv
+// means "no environment consulted" and reports the default, true.
+func Enabled(getenv func(string) string) bool {
+	if getenv == nil {
+		return true
+	}
+	v := strings.TrimSpace(getenv(EnvEnabled))
+	if v == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(v)
+	if err != nil {
+		return true
+	}
+	return on
 }
 
 // Store is the persistence surface the scanner needs. pgstore.Store is the
