@@ -16,6 +16,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/sorolens/sorolens/services/indexer/internal/coordinator"
+	"github.com/sorolens/sorolens/services/indexer/internal/expiryalert"
 	"github.com/sorolens/sorolens/services/indexer/internal/metrics"
 	"github.com/sorolens/sorolens/services/indexer/internal/pgstore"
 	"github.com/sorolens/sorolens/services/indexer/internal/poller"
@@ -126,6 +127,24 @@ func main() {
 	// rule evaluation at the end of every pass.
 	if rs, ok := any(st).(rulesengine.Store); ok {
 		p.SetRuleEvaluator(rulesengine.New(rs, log))
+	}
+
+	// Storage expiry alerting (issue #510): after every pass the indexer scans
+	// the tracked storage entries whose TTL falls within
+	// INDEXER_STORAGE_EXPIRY_THRESHOLD_LEDGERS (default 5000) of the contract's
+	// last indexed ledger and raises one Critical summary per contract whose
+	// near-expiry set changed. Delivery reuses the watchdog notifier, so the
+	// summary lands on the webhook/Slack/Discord/PagerDuty subscriptions the
+	// user registered. Set INDEXER_STORAGE_EXPIRY_ALERT_ENABLED=false to opt out.
+	if expiryalert.Enabled(os.Getenv) {
+		if es, ok := any(st).(expiryalert.Store); ok {
+			ecfg := expiryalert.ConfigFromEnv(os.Getenv)
+			p.SetExpiryAlerter(expiryalert.New(es, newExpiryNotifier(st, log), ecfg, log))
+			log.Info("indexer: storage expiry alerting enabled",
+				"threshold_ledgers", ecfg.ThresholdLedgers,
+				"max_entries", ecfg.MaxEntries,
+			)
+		}
 	}
 
 	// Prometheus metrics (issue #198): the indexer exposes per-network lag on
