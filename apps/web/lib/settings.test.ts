@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import * as settingsModule from "./settings";
 import {
   DEFAULT_SETTINGS,
+  NOTIFICATION_CHANNELS,
   SETTINGS_STORAGE_KEY,
   clearSettings,
-  generateApiKey,
+  isStoredApiKey,
   isValidEmail,
   loadSettings,
   maskApiKey,
   saveSettings,
+  storedKeyLabel,
+  type StoredApiKey,
   type UserSettings,
 } from "./settings";
 
@@ -31,6 +35,14 @@ function memoryStorage(): Storage {
   };
 }
 
+const STORED_KEY: StoredApiKey = {
+  id: "k_123",
+  name: "sorolens-dashboard",
+  keyPrefix: "sl_3f9a1c22",
+  scopes: ["read:contracts"],
+  createdAt: "2026-09-25T00:00:00.000Z",
+};
+
 describe("isValidEmail", () => {
   it("accepts ordinary addresses", () => {
     expect(isValidEmail("dev@example.com")).toBe(true);
@@ -47,33 +59,91 @@ describe("isValidEmail", () => {
   });
 });
 
-describe("generateApiKey", () => {
-  it("returns a prefixed hex token of fixed length", () => {
-    const key = generateApiKey();
-    expect(key.startsWith("sl_live_")).toBe(true);
-    expect(key.slice("sl_live_".length)).toMatch(/^[0-9a-f]{48}$/);
+// Acceptance criterion "no fake key remains", pinned at the module boundary:
+// the generator that fabricated a `sl_live_…` string must be gone, and no
+// export may mint credential material itself.
+describe("fabricated-key path is gone", () => {
+  it("no longer exports generateApiKey", () => {
+    expect(Object.keys(settingsModule)).not.toContain("generateApiKey");
   });
 
-  it("does not repeat between calls", () => {
-    expect(generateApiKey()).not.toBe(generateApiKey());
+  it("has no export that returns an sl_live_ token", () => {
+    // A key the API did not issue cannot be produced from thin air: any token
+    // shape like the old fake must be rejected by the stored-key guard.
+    expect(isStoredApiKey("sl_live_" + "0".repeat(48))).toBe(false);
+    expect(
+      isStoredApiKey({ ...STORED_KEY, key: "sl_live_" + "0".repeat(48) })
+    ).toBe(true); // extra field is tolerated on read but stripped on write
+  });
+
+  it("does not fabricate a key when storage is empty", () => {
+    const storage = memoryStorage();
+    expect(saveSettings(DEFAULT_SETTINGS, storage)).toBe(true);
+    expect(storage.getItem(SETTINGS_STORAGE_KEY)).not.toContain("sl_live_");
+    expect(loadSettings(storage).apiKey).toBeNull();
+  });
+});
+
+describe("isStoredApiKey", () => {
+  it("accepts a complete metadata record", () => {
+    expect(isStoredApiKey(STORED_KEY)).toBe(true);
+  });
+
+  it("rejects anything shaped like a bare token", () => {
+    expect(isStoredApiKey("sl_3f9a1c22abcdefgh")).toBe(false);
+    expect(isStoredApiKey(null)).toBe(false);
+    expect(isStoredApiKey(undefined)).toBe(false);
+    expect(isStoredApiKey({ ...STORED_KEY, id: "" })).toBe(false);
+    expect(isStoredApiKey({ ...STORED_KEY, scopes: "read:contracts" })).toBe(
+      false
+    );
+    expect(isStoredApiKey({ ...STORED_KEY, scopes: [1] })).toBe(false);
+  });
+});
+
+describe("storedKeyLabel", () => {
+  it("shows the non-secret prefix padded like a redacted credential", () => {
+    expect(storedKeyLabel(STORED_KEY)).toBe("sl_3f9a1c22••••••••");
+  });
+
+  it("shows an em dash when there is no key", () => {
+    expect(storedKeyLabel(null)).toBe("—");
   });
 });
 
 describe("maskApiKey", () => {
-  it("keeps a recognisable prefix and suffix", () => {
-    const key = "sl_live_00112233445566778899aabbccddeeff00112233445566";
+  it("keeps a recognisable prefix and suffix of a live token", () => {
+    const key = "sl_3f9a1c22b0d4e6f8a1c2d3e4f5061728394a5b6c7d8e9f01";
     const masked = maskApiKey(key);
-    expect(masked.startsWith("sl_live_")).toBe(true);
+    expect(masked).toBe(`sl_3f9a1${"•".repeat(8)}${key.slice(-4)}`);
     expect(masked.endsWith(key.slice(-4))).toBe(true);
     expect(masked).not.toBe(key);
   });
 
-  it("returns an empty string when there is no key", () => {
+  it("returns an empty string when there is no token", () => {
     expect(maskApiKey(null)).toBe("");
   });
 
   it("fully hides a short value", () => {
     expect(maskApiKey("short")).toBe("•••••");
+  });
+});
+
+describe("NOTIFICATION_CHANNELS", () => {
+  it("labels every channel with where the preference actually takes effect", () => {
+    expect(NOTIFICATION_CHANNELS.every((channel) => Boolean(channel.sourceNote)));
+    expect(
+      NOTIFICATION_CHANNELS.find((channel) => channel.id === "weekly_digest")
+        ?.source
+    ).toBe("api");
+    expect(
+      NOTIFICATION_CHANNELS.find((channel) => channel.id === "critical_alerts")
+        ?.source
+    ).toBe("browser");
+    expect(
+      NOTIFICATION_CHANNELS.find((channel) => channel.id === "health_changes")
+        ?.source
+    ).toBe("browser");
   });
 });
 
@@ -94,12 +164,46 @@ describe("loadSettings / saveSettings", () => {
           weekly_digest: true,
         },
       },
-      apiKey: "sl_live_abc",
-      apiKeyCreatedAt: "2026-09-25T00:00:00.000Z",
+      apiKey: STORED_KEY,
     };
 
     expect(saveSettings(settings, storage)).toBe(true);
     expect(loadSettings(storage)).toEqual(settings);
+  });
+
+  it("persists only metadata when a live token slips into the record", () => {
+    const storage = memoryStorage();
+    const withToken = {
+      defaultNetwork: "mainnet",
+      notifications: DEFAULT_SETTINGS.notifications,
+      apiKey: { ...STORED_KEY, token: "sl_secret_material" },
+    } as unknown as UserSettings;
+
+    saveSettings(withToken, storage);
+
+    const raw = storage.getItem(SETTINGS_STORAGE_KEY) as string;
+    expect(raw).not.toContain("sl_secret_material");
+    expect(loadSettings(storage).apiKey).toEqual(STORED_KEY);
+  });
+
+  it("drops the pre-#613 fake key instead of carrying it forward", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        defaultNetwork: "testnet",
+        apiKey: "sl_live_00112233445566778899aabbccddeeff00112233445566",
+        apiKeyCreatedAt: "2026-09-25T00:00:00.000Z",
+      })
+    );
+
+    const loaded = loadSettings(storage);
+    expect(loaded.apiKey).toBeNull();
+    expect(loaded.defaultNetwork).toBe("testnet");
+
+    // And a save of the loaded blob cannot resurrect the fake value.
+    saveSettings(loaded, storage);
+    expect(storage.getItem(SETTINGS_STORAGE_KEY)).not.toContain("sl_live_");
   });
 
   it("fills missing fields from defaults for older or partial blobs", () => {
@@ -132,5 +236,12 @@ describe("loadSettings / saveSettings", () => {
     saveSettings(DEFAULT_SETTINGS, storage);
     clearSettings(storage);
     expect(storage.getItem(SETTINGS_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe("DEFAULT_SETTINGS", () => {
+  it("starts with no key and no fabricated credential", () => {
+    expect(DEFAULT_SETTINGS.apiKey).toBeNull();
+    expect(JSON.stringify(DEFAULT_SETTINGS)).not.toContain("sl_live_");
   });
 });

@@ -9,6 +9,11 @@ export type SaveState = "idle" | "saved" | "error";
  * button and its own status line, so a rejected value in one card never blocks
  * the others. State is owned by the page so every card reads from the same
  * source of truth.
+ *
+ * `onSave` may be async: a card whose Save round-trips to the API (the digest
+ * preference, issue #613) reports its own outcome instead of only the local one.
+ * `hideSave` is for cards that act immediately — an API key is created or
+ * revoked by the server on click, so a Save button would be a lie.
  */
 export function SettingsCard({
   title,
@@ -18,14 +23,19 @@ export function SettingsCard({
   onSave,
   testId,
   saveLabel = "Save",
+  hideSave = false,
+  statusMessage,
 }: {
   title: string;
   description: string;
   children: ReactNode;
   status: SaveState;
-  onSave: () => boolean;
+  onSave?: () => boolean | Promise<boolean>;
   testId: string;
   saveLabel?: string;
+  hideSave?: boolean;
+  /** Overrides the default "Could not save" wording when a save fails upstream. */
+  statusMessage?: string;
 }) {
   return (
     <section
