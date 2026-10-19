@@ -66,9 +66,11 @@ describe("createApiKey", () => {
     seedSession();
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(403, { error: "admin role required", code: "forbidden" })
-      )
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(403, { error: "admin role required", code: "forbidden" })
+        )
     );
 
     await expect(
@@ -80,9 +82,11 @@ describe("createApiKey", () => {
     seedSession();
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(201, { id: "key_1", name: "k", key_prefix: "p" })
-      )
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(201, { id: "key_1", name: "k", key_prefix: "p" })
+        )
     );
 
     await expect(
@@ -110,7 +114,9 @@ describe("revokeApiKey", () => {
     seedSession();
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(404, { error: "API key not found" }))
+      vi
+        .fn()
+        .mockResolvedValue(jsonResponse(404, { error: "API key not found" }))
     );
 
     await expect(revokeApiKey("key_gone", "u_42")).rejects.toMatchObject({

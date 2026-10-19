@@ -83,10 +83,7 @@ export async function createApiKey(opts: {
  * Revokes a key on the API. The endpoint answers 204 with no body, so any
  * non-OK response is turned into an ApiError carrying the server message.
  */
-export async function revokeApiKey(
-  id: string,
-  userId?: string
-): Promise<void> {
+export async function revokeApiKey(id: string, userId?: string): Promise<void> {
   const res = await fetch(
     `${API_URL}/api/v1/api-keys/${encodeURIComponent(id)}`,
     { method: "DELETE", headers: sessionHeaders(userId) }
